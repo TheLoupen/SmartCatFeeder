@@ -1,0 +1,290 @@
+#include <Stepper.h>
+#include <Wire.h>
+#include <ds3231.h>
+
+// TCS230 or TCS3200 pins wiring to Arduino
+#define S0 4
+#define S1 5
+#define S2 6
+#define S3 7
+#define sensorOut 8
+#define echoPin 2 // attach pin D2 Arduino to pin Echo of HC-SR04
+#define trigPin 3 //attach pin D3 Arduino to pin Trig of HC-SR04
+
+//Stepper
+#define A 9
+#define B 10
+#define C 11
+#define D 12
+const int stepsPerRevolution = 200;
+Stepper myStepper(stepsPerRevolution, A, B, C, D);
+
+//Calibration
+int BowlRedHigh = 540; //540 //520
+int BowlRedLow = 430; //400 //430
+int BowlGreenHigh = 550; //550 //485
+int BowlGreenLow = 450;
+int BowlBlueHigh = 150; //160 //140
+int BowlBlueLow = 130;
+int FoodRedHigh = 490; //460 //450
+int FoodRedLow = 350; //250 //350
+int FoodGreenHigh = 650;
+int FoodGreenLow = 470; //590 //470
+int FoodBlueHigh = 190;
+int FoodBlueLow = 150;
+
+int Feeds = 0;
+int FirstFeed = 0;
+
+//Clock
+struct ts t;
+int NextFeedHour = 0;
+int FeedInc = 3; //houes between feeds
+
+// Stores frequency read by the photodiodes
+int redFrequency = 0;
+int greenFrequency = 0;
+int blueFrequency = 0;
+
+// Stores the red. green and blue colors
+int redColor = 0;
+int greenColor = 0;
+int blueColor = 0;
+
+//Ultrasonic
+long duration; // variable for the duration of sound wave travel
+int distance; // variable for the distance measurement
+
+//LED
+int ledPin=13;
+
+//Variables
+int FOODdetected = 0;
+int BOWLdetected = 0;
+int Despensing = 0;
+
+void setup() {
+  // Setting the outputs
+  pinMode(S0, OUTPUT);
+  pinMode(S1, OUTPUT);
+  pinMode(S2, OUTPUT);
+  pinMode(S3, OUTPUT);
+  pinMode(ledPin, OUTPUT);
+  pinMode(trigPin, OUTPUT); // Sets the trigPin as an OUTPUT
+  pinMode(A,OUTPUT);
+  pinMode(B,OUTPUT);
+  pinMode(C,OUTPUT);
+  pinMode(D,OUTPUT);
+
+  //Clock
+  Wire.begin();
+  DS3231_init(DS3231_INTCN);
+
+  //Get next feed time
+  DS3231_get(&t);
+  NextFeedHour = t.hour/FeedInc;
+  NextFeedHour = (NextFeedHour+1)*FeedInc;
+    
+  //set clock values
+  t.hour=14; 
+  t.min=13;
+  t.sec=00;
+  t.mday=28;
+  t.mon=01;
+  t.year=2021;
+  //DS3231_set(t); //uncomment to set clock
+  
+  // Setting the sensorOut as an input
+  pinMode(sensorOut, INPUT);
+  pinMode(echoPin, INPUT); // Sets the echoPin as an INPUT
+  
+  // Setting frequency scaling to 20%
+  digitalWrite(S0,HIGH);
+  digitalWrite(S1,LOW);
+  
+  // Begins serial communication
+  Serial.begin(9600);
+
+  // Motor
+  myStepper.setSpeed(60);
+
+  //refill
+  cycle(4);
+}
+
+void write(int a,int b,int c,int d){
+  digitalWrite(A,a);
+  digitalWrite(B,b);
+  digitalWrite(C,c);
+  digitalWrite(D,d);
+}
+
+void getRange() {
+  // Clears the trigPin condition
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  // Sets the trigPin HIGH (ACTIVE) for 10 microseconds
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  // Reads the echoPin, returns the sound wave travel time in microseconds
+  duration = pulseIn(echoPin, HIGH);
+  // Calculating the distance
+  distance = duration * 0.034 / 2; // Speed of sound wave divided by 2 (go and back)
+  Serial.print("distance: ");Serial.println(distance);
+}
+
+void getColor() {
+  BOWLdetected = 0;
+  FOODdetected = 0;
+  
+  // Setting RED (R) filtered photodiodes to be read
+  digitalWrite(S2,LOW);
+  digitalWrite(S3,LOW);
+  // Reading the output frequency
+  redFrequency = pulseIn(sensorOut, LOW);
+  // Printing the value on the serial monitor
+  Serial.print("R= ");//printing name
+  Serial.print(redFrequency);//printing RED color frequency
+  Serial.print("  ");
+  delay(100);
+    
+  // Setting GREEN (G) filtered photodiodes to be read
+  digitalWrite(S2,HIGH);
+  digitalWrite(S3,HIGH);
+  // Reading the output frequency
+  greenFrequency = pulseIn(sensorOut, LOW);
+  // Printing the value on the serial monitor
+  Serial.print("G= ");//printing name
+  Serial.print(greenFrequency);//printing RED color frequency
+  Serial.print("  ");
+  delay(100);
+  delay(100);
+ 
+  // Setting BLUE (B) filtered photodiodes to be read
+  digitalWrite(S2,LOW);
+  digitalWrite(S3,HIGH);
+  // Reading the output frequency
+  blueFrequency = pulseIn(sensorOut, LOW);
+  // Printing the value on the serial monitor
+  Serial.print("B= ");//printing name
+  Serial.print(blueFrequency);//printing RED color frequency
+  delay(100);
+}
+
+void checkColor() {
+  //Check for Bowl
+  if(redFrequency > BowlRedLow && redFrequency < BowlRedHigh && greenFrequency > BowlGreenLow && greenFrequency < BowlGreenHigh && blueFrequency > BowlBlueLow && blueFrequency < BowlBlueHigh){
+    Serial.println("BOWL detected!");
+    BOWLdetected = 1;
+  }
+
+  //Check for Food
+  if(redFrequency > FoodRedLow && redFrequency < FoodRedHigh && greenFrequency > FoodGreenLow && greenFrequency < FoodGreenHigh && blueFrequency > FoodBlueLow && blueFrequency < FoodBlueHigh){
+    Serial.println("Food detected!");
+    FOODdetected = 1;
+  }
+
+  //anything detected?
+  if (BOWLdetected == 0 && FOODdetected == 0) {
+    Serial.print("nothing detected");
+  }
+}
+
+void cycle(int number) {
+  int j;
+  j=0;
+  while (j<number) {
+    vibrate(3);
+    myStepper.step(-300);
+    vibrate(3);
+    myStepper.step(600);
+    j++;
+  }
+  write(0,0,0,0);
+}
+
+void vibrate(int times) {
+  int i;
+  i=0;
+  while (i<times) {
+    myStepper.step(-50);
+    delay(10);
+    myStepper.step(50);
+    delay(10);
+    i++;
+  }
+}
+
+void loop() {  
+  //Get time
+  DS3231_get(&t);
+
+  //Display Time
+  DS3231_get(&t);
+  //Serial.print("Date : ");
+  //Serial.print(t.mday);
+  //Serial.print("/");
+  //Serial.print(t.mon);
+  //Serial.print("/");
+  //Serial.print(t.year);
+  Serial.print("   Hour : ");
+  Serial.print(t.hour);
+  Serial.print(":");
+  Serial.print(t.min);
+  Serial.print(".");
+  Serial.print(t.sec);
+
+  //reset hour for next day
+  if (NextFeedHour > 23) {
+    NextFeedHour = 0;
+    FirstFeed = 1;
+  }
+  
+  //Print next feed time
+  Serial.print("    Next Feed: ");
+  Serial.print(NextFeedHour);
+  Serial.print("    ");
+  
+  //get color
+  getColor();
+
+  //check time for intermittent feeds
+  if (t.hour == NextFeedHour) {
+    cycle(3);
+    NextFeedHour = NextFeedHour+FeedInc;
+  }
+
+  //check the bowl at night for top off
+  if (t.hour < 2) {
+    //Dispense 1/day
+    if (FirstFeed == 1) {
+      Despensing = 1;
+      FirstFeed = 0;
+    }
+    checkColor();
+  }
+
+  //Dispense food if needed
+  if(BOWLdetected == 1){
+    Despensing = 1;
+  }
+  if(FOODdetected == 1){
+    
+    if (Despensing == 1) {
+      Feeds=Feeds+1;
+    }
+    
+    Despensing = 0;
+    Serial.println("Stop Feeding!");
+    write(0,0,0,0);
+  }
+  if(Despensing == 1) {
+    getRange();
+    if(distance > 15 && distance < 19){
+      cycle(1);
+    }
+  }
+  Serial.print("    Feeds: ");
+  Serial.println(Feeds);
+}
